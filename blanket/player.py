@@ -1,10 +1,11 @@
 # Copyright 2020-2022 Rafael Mardojai CM
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-from gi.repository import Gst, GstPlay
+from gi.repository import Gst, GstPlay, GLib
 
 from blanket.main_player import MainPlayer
 
+FADE_TIME = 5000000
 
 class Player(GstPlay.Play):
     """
@@ -45,6 +46,8 @@ class Player(GstPlay.Play):
         # Connect volume-changed signal
         self.connect('notify::volume', self._on_volume_changed)
 
+        self._start_time = GLib.get_monotonic_time() 
+
     def set_virtual_volume(self, volume: float):
         # Get last saved sound volume
         self.saved_volume = volume
@@ -60,12 +63,33 @@ class Player(GstPlay.Play):
         MainPlayer.get().disconnect(self.volume_hdlr)
         MainPlayer.get().disconnect(self.playing_hdlr)
 
+    def _do_fadein(self):
+        time = GLib.get_monotonic_time() - self._start_time
+        full_volume = self.saved_volume * MainPlayer.get().volume
+        proportion = min(time/FADE_TIME, 1)
+        self.set_volume(full_volume * proportion)
+        return time <= FADE_TIME and MainPlayer.get().playing
+
+    def _do_fadeout(self):
+        time = GLib.get_monotonic_time() - self._start_time
+        full_volume = self.saved_volume * MainPlayer.get().volume
+        proportion = 1 - min(time/FADE_TIME, 1)
+        self.set_volume(full_volume * proportion)
+        end = time > FADE_TIME
+        if end:
+            self.pause()
+        return not end and not MainPlayer.get().playing
+
     def _on_playing_changed(self, _player, _volume):
         if not self.__vol_zero():
+            time_left = self._start_time + FADE_TIME - GLib.get_monotonic_time()
+            self._start_time = GLib.get_monotonic_time() - max(time_left, 0)
+
             if MainPlayer.get().playing:
                 self.play()
+                GLib.idle_add(self._do_fadein)
             else:
-                self.pause()
+                GLib.idle_add(self._do_fadeout)
 
     def _on_volume_changed(self, _player, _volume):
         # Fix external changes to player volume
